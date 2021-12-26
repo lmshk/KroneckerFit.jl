@@ -1,56 +1,14 @@
 module KroneckerFit
 
 using Memoize
+using Random
 
-import Base.getindex
-import Graphs
 import Kronecker
-import StaticGraphs
 
 export Permutation, approximate_empty_logℒ, approximate_logℒ, Δlogℒ_for_swap
 
-
-# Graph definition
-
-const Graph = StaticGraphs.StaticDiGraph  # TODO get rid of StaticGraphs
-
-outneighbors(G::Graph{Index, EdgeIndex}, u::Index) where {
-    Index <: Integer, EdgeIndex <: Integer
-} = Graphs.outneighbors(G, u)
-
-inneighbors(G::Graph{Index, EdgeIndex}, u::Index) where {
-    Index <: Integer, EdgeIndex <: Integer
-} = Graphs.inneighbors(G, u)
-
-edges(G::Graph{Index, EdgeIndex}) where {
-    Index <: Integer, EdgeIndex <: Integer
-} = Graphs.edges(G)
-
-# Iterate indices of 2 rows and 2 columns of G's adjacency matrix, taking care
-# not to double-enumerate 4 points of intersection.
-function foreach_incident_edge(
-    f::Function,
-    G::Graph{Index},
-    u::Index,
-    v::Index,
-) where Index <: Integer
-    foreach(f, (u, w) for w in outneighbors(G, u))
-    foreach(f, (w, u) for w in inneighbors(G, u) if w != u)
-    foreach(f, (v, w) for w in outneighbors(G, v) if w != u)
-    foreach(f, (w, v) for w in inneighbors(G, v) if w != v && w != u)
-end
-
-
-# Permutation definition
-
-struct Permutation
-    σ::AbstractVector{Int}
-end
-
-Base.getindex(σ::Permutation, (u, v)::Tuple{Index, Index}) where {
-    Index <: Integer
-} = CartesianIndex(σ.σ[u], σ.σ[v])
-
+include("graphs.jl")
+include("permutations.jl")
 
 # Kronecker utilities
 
@@ -116,16 +74,20 @@ function approximate_empty_logℒ(
     ε::T = T(NaN),
     n::Int = typemax(Int),
 ) where T <: Real
-    result = zero(T)
-
-    n ≤ 0 && return result
+    # TODO: Test behavior with bad values, especially <0, >1 and =1. -- 2022-01-16
 
     Θs = factors(P)
+    
+    # For non-probability inputs, logℒ is not defined.
+    all(all(zero(T) .<= Θ .<= one(T)) for Θ in Θs) || throw(DomainError(Θs))
 
-    # If all factors' entries are 1, the series diverges to -∞, but extremely
-    # slowly; no need to take the scenic route.
-    all(all.(isone, Θs)) && return typemin(T)
-
+    result = zero(T)
+    n ≤ 0 && return result
+    
+    # If all factors contain at least one 1, the series diverges to -∞, but
+    # extremely slowly; no need to take the scenic route.
+    all(any(isone.(Θ)) for Θ in Θs) && return typemin(T)
+    
     k = multiplicity(P)
     i = 0
     Θs′ = copy.(Θs)
@@ -188,39 +150,41 @@ end
 
 # gradient
 
-function set_empty_∇logℒ!(
+function empty_∇logℒ!(
     ∇logℒ::Tuple{AbstractMatrix{T}},
-    P::AbstractMatrix{T}
+    P::AbstractMatrix{T},
 ) where T <: Real
     ∇logℒ[1] .= -one(T) ./ (one(T) .- P)
 end
 
-function set_approximate_empty_∇logℒ!(
+function approximate_empty_∇logℒ!(
     ∇logℒ::Tuple{Vararg{AbstractMatrix{T}}},
     P::AbstractMatrix{T};
     ε::T = T(NaN),
     n::Int = typemax(Int),
 ) where T <: Real
-    set_empty_∇logℒ!(∇logℒ, P)
+    empty_∇logℒ!(∇logℒ, P)
 end
 
-function set_approximate_empty_∇logℒ!(
+function approximate_empty_∇logℒ!(
     ∇logℒ::Tuple{Vararg{AbstractMatrix{T}}},
     P::Kronecker.AbstractKroneckerProduct{T};
     ε::T = T(NaN),
     n::Int = typemax(Int),
 ) where T <: Real
+    Θs = factors(P)
+    
+    # For non-probability inputs, ∇logℒ is not defined.
+    all(all(zero(T) .<= Θ .<= one(T)) for Θ in Θs) || throw(DomainError(Θs))
+
     for ∇logΘ in ∇logℒ
         ∇logΘ .= zero(T)
     end
-
     n ≤ 0 && return
-
-    Θs = factors(P)
-
+    
     # Like for the approximate logℒ, if all factors' entries are 1, the series
     # diverges to -∞, but too slowly; take the shortcut.
-    if all(all.(isone, Θs))
+    if all(any(isone.(Θ)) for Θ in Θs)
         for ∇logΘ in ∇logℒ
             ∇logΘ .= typemin(T)
         end
@@ -261,6 +225,8 @@ function set_approximate_empty_∇logℒ!(
         end
         changing || break
         i += 1
+        # i < n || @warn("ill-conditioned", i, n, Δs, ∇logℒ)
+        # TODO: Do we need to warn here^? -- 2022-01-17
         i < n || break
         Δs, Θs′ = Θs′, Δs
         for (Θ′, Δ, Θ) in zip(Θs′, Δs, Θs)
@@ -293,15 +259,15 @@ function Δ∂logℒ_for_link(
     multiplicity(P, entry, n, factor) / (x * (one(T) - P[entry]))
 end
 
-function set_approximate_∇logℒ!(
-    ∇logℒ::Tuple{Vararg{AbstractMatrix{T}}},
-    G::Graph{Index},
+function approximate_∇logℒ!(
+    ∇logℒ::Tuple{Vararg{AbstractMatrix{T}}};
     P::AbstractMatrix{T},
-    σ::Permutation;
+    σ::Permutation,
+    G::Graph{Index},
     ε::T = T(NaN),
     n::Int = typemax(Int),
 ) where {Index <: Integer, T <: Real}
-    set_approximate_empty_∇logℒ!(∇logℒ, P; ε, n)
+    approximate_empty_∇logℒ!(∇logℒ, P; ε, n)
     Θs = factors(P)
     for edge in Tuple.(edges(G))
         entry = σ[edge]
@@ -351,29 +317,185 @@ function add_Δ∇logℒ_for_swap!(
     end
 end
 
+
+struct ApproximationPolicy{T <: Real}
+    ε::T
+    n::Int
+
+    ApproximationPolicy{T}(;
+        ε,
+        n = typemax(Int),
+    ) where T <: Real = new(ε, n)
+end
+
+struct ExpectationPolicy{T}
+    ω::Real
+    burn::Int
+    samples::Int
+    ∇logℒ::ApproximationPolicy{T}
+    trace_burn::Function
+    trace_sample::Function
+
+    ExpectationPolicy{T}(;
+        ω,
+        burn,
+        samples,
+        ∇logℒ,
+        trace_burn = identity,
+        trace_sample = identity,
+    ) where T <: Real = new(ω, burn, samples, ∇logℒ, trace_burn, trace_sample)
+end
+
+struct GradientUpdatePolicy{T}
+    α::T
+    β₁::T
+    β₂::T
+    range::Tuple{T, T}
+
+    GradientUpdatePolicy{T}(;
+        α  = T(0.001),
+        β₁ = T(0.9),
+        β₂ = T(0.999),
+        range = (nextfloat(zero(T)), prevfloat(one(T))),
+    ) where T <: Real = new(α, β₁, β₂, range)
+end
+
+struct GradientDescentPolicy{T}
+    steps::Int
+    expectation::ExpectationPolicy{T}
+    update::GradientUpdatePolicy{T}
+    trace::Function
+
+    GradientDescentPolicy{T}(;
+        steps,
+        expectation,
+        update = GradientUpdatePolicy{T}(),
+        trace = identity,
+    ) where T <: Real = new(steps, expectation, update, trace)
+end
+
+function next_swap(
+    σ::Permutation;
+    P::AbstractMatrix{T},
+    G::Graph{Index},
+    ω::Real,
+    trace::Function,
+    entropy::AbstractRNG,
+) where {T <: Real, Index <: Integer}
+    for rejected in Iterators.countfrom(0)
+        (u, v) = random_pair(entropy, G, ω)
+        Δlogℒ = Δlogℒ_for_swap(G, P, σ, u, v)
+        # TODO: maybe trace trace Δlogℒ even for rejected samples -- 2022-01-10
+        if log(rand(entropy, T)) ≤ Δlogℒ
+            trace((; u, v, rejected, Δlogℒ))
+            return (u, v)
+        end
+    end
+end
+
+function approximate_𝔼σ_∇logℒ!(
+    𝔼σ_∇logℒ::Tuple{Vararg{AbstractMatrix{T}}},
+    σ::Permutation;
+    P::AbstractMatrix{T},
+    G::Graph{Index},
+    policy::ExpectationPolicy{T},
+    entropy::AbstractRNG,
+    ∇logℒ::Tuple{Vararg{AbstractMatrix{T}}},
+) where {T <: Real, Index <: Integer}
+    ω = policy.ω
+
+    # Since P has likely changed, we need to re-burn σ and then re-estimate
+    # ∇logℒ.
+    for i in 1:policy.burn
+        (u, v) = next_swap(σ; P, G, ω, trace = policy.trace_burn, entropy)
+        swap!(σ, u, v)
+        # TODO: Check for convergence. -- 2022-01-14
+    end
+    approximate_∇logℒ!(∇logℒ; P, σ, G, ε = policy.∇logℒ.ε, n = policy.∇logℒ.n)
+
+    copy!.(𝔼σ_∇logℒ, ∇logℒ)
+    for _ in 1:policy.samples
+        (u, v) = next_swap(σ; P, G, ω, trace = policy.trace_sample, entropy)
+        add_Δ∇logℒ_for_swap!(∇logℒ, G, P, σ, u, v)
+        for (𝔼σ_∇logΘ, ∇logΘ) in zip(𝔼σ_∇logℒ, ∇logℒ)
+            𝔼σ_∇logΘ .+= ∇logΘ
+        end
+        swap!(σ, u, v)
+        # TODO: Trace swap. -- 2022-01-13
+        # TODO: Check for convergence. -- 2022-01-14
+    end
+
+    for 𝔼σ_∇logΘ in 𝔼σ_∇logℒ
+        𝔼σ_∇logΘ ./= policy.samples
+    end
+end
+
+function ascend!(
+    P::AbstractMatrix{T},
+    σ::Permutation;
+    G::Graph{Index},
+    policy::GradientDescentPolicy{T},
+    entropy::AbstractRNG,
+) where {T <: Real, Index <: Integer}
+    Θs = factors(P)  # aliased: Θs' and P's values are linked
+
+    𝔼σ_∇logℒ = similar.(Θs)
+    ∇logℒ = similar.(Θs)
+    ΔΘs = similar.(Θs)
+    ms = zero.(Θs)
+    vs = zero.(Θs)
+
+    α = policy.update.α
+    β₁ = policy.update.β₁
+    β₂ = policy.update.β₂
+    for i in 1:policy.steps
+        approximate_𝔼σ_∇logℒ!(
+            𝔼σ_∇logℒ,
+            σ;
+            P,
+            G,
+            policy = policy.expectation,
+            entropy,
+            ∇logℒ,
+        )
+        for (Θ, ∇logΘ, m, v, ΔΘ) in zip(Θs, 𝔼σ_∇logℒ, ms, vs, ΔΘs)
+            m .= β₁ .* m .+ (one(T) - β₁) .* ∇logΘ
+            v .= β₂ .* v .+ (one(T) - β₂) .* ∇logΘ.^2
+            debias = sqrt(one(T) - β₂^i) / (one(T) - β₁^i)
+            ΔΘ .= α * debias .* m ./ (sqrt.(v) .+ 1e-8)
+            Θ .+= ΔΘ  # updates P
+            clamp!(Θ, policy.update.range...)
+        end
+        logℒ = approximate_logℒ(G, P, σ; ε = 1e-12, n = 10)
+        policy.trace((; i, 𝔼σ_∇logℒ, ms, vs, ΔΘs, Θs, logℒ))
+        # TODO: Trace logℒ (approximating it here) and potentially other
+        #   convergence statistics. -- 2022-01-14
+        # TODO: Check for convergence. -- 2022-01-14
+        #   ^ e.g. Adam "SNR" m̂s ./ √v̂s
+    end
+end
+
+function optimize!(
+    P::AbstractMatrix{T};
+    G::Graph{Index},
+    policy::GradientDescentPolicy{T},
+    entropy::AbstractRNG,
+) where {T <: Real, Index <: Integer}
+    σ = Permutation(shuffle(entropy, nodes(G)))  # TODO: Sort by degree.
+    ascend!(P, σ; G, policy, entropy)
+end
+
 #=
-TODO: Implement sampling permutations
-TODO: Implement gradient descent
-TODO: Implement public interface
-TODO: Replace StaticGraphs
-TODO: Split up files
-TODO: Clean up tests
+TODO: implement public interface
+TODO: split up files
+TODO: test sampling permutations
+TODO: clean up tests
 TODO: documentation
 
-σ = initial permutation
-logΘs = log.(Θs)
-log_likelihood = approximate_empty_log_likelihood(...)
-until logΘs convergence:
-    k times:
-        (u, v) = repeat
-            (u, v) = sample swap proposal
-            if accept (u, v): yield it
-        add_∇logΘs_change_for_swap!(Δ∇logΘs, Θs)
-        ∇logΘs += Δ∇logΘs ./ k
-    σ = swap last (u, v) in σ
-    logΘs += λ .* ∇logΘs
-    Θs = exp.(logΘs)
-
+TODO: check if Adam, RMSprop or similar are faster
+TODO: check if we should use ComponentArrays
+TODO: parallelization?
+TODO: GPU?
 =#
 
 end # module

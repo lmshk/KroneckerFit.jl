@@ -3,15 +3,13 @@ using KroneckerFit
 using Test
 using Random
 
-import Graphs
 import ForwardDiff
 import Kronecker
-import StaticGraphs
 
 # REMOVE
 using BenchmarkTools
 
-include("vendor.jl")
+include("graphs.jl")
 
 @testset "multiplicity" begin
     multiplicities(M, n, factor) = [
@@ -87,8 +85,8 @@ include("vendor.jl")
     ]
 end
 
-graph(A::AbstractMatrix) = A |> Graphs.SimpleDiGraph |> StaticGraphs.StaticDiGraph
-adjacency(G::KroneckerFit.Graph) = [Graphs.has_edge(G, (u, v)) for u in 1:Graphs.nv(G), v in 1:Graphs.nv(G)]
+graph(A::AbstractMatrix) = KroneckerFit.Graph(A)
+adjacency(G::KroneckerFit.Graph) = collect(G.A)
 
 function logℒ(G, P)
     A = adjacency(G)
@@ -138,7 +136,7 @@ end
     ]
     P2 = Kronecker.kronecker(P, P)
 
-    A = [
+    A = Bool[
         1 1
         0 1
     ]
@@ -292,7 +290,7 @@ end
 
 function approximate_empty_∇logℒ(P; keywords...)
     result = similar.(KroneckerFit.factors(P))
-    KroneckerFit.set_approximate_empty_∇logℒ!(result, P; keywords...)
+    KroneckerFit.approximate_empty_∇logℒ!(result, P; keywords...)
     result
 end
 
@@ -365,7 +363,7 @@ end
 
 function approximate_∇logℒ(G, P, σ; keywords...)
     result = similar.(KroneckerFit.factors(P))
-    KroneckerFit.set_approximate_∇logℒ!(result, G, P, σ; keywords...)
+    KroneckerFit.approximate_∇logℒ!(result; P, σ, G, keywords...)
     result
 end
 
@@ -384,7 +382,7 @@ end
         0.5   0.25
     ]
 
-    A = [
+    A = Bool[
         1 0
         1 1
     ]
@@ -417,7 +415,7 @@ end
 
 function test_Δlogℒ_for_swap(G, P, σ, u, v)
     σ′ = Permutation(copy(σ.σ))
-    σ′.σ[u], σ′.σ[v] = σ′.σ[v], σ′.σ[u]
+    KroneckerFit.swap!(σ′, u, v)
     @test Δlogℒ_for_swap(G, P, σ, u, v) ≈ logℒ(G, P, σ′) - logℒ(G, P, σ) atol=10^-10
 
     gradient = zero.(KroneckerFit.factors(P))
@@ -438,46 +436,40 @@ end
 @testset "Δ(∇)logℒ for swap" begin
     # Test a bunch of trivial cases.
 
-    @test Δlogℒ_for_swap(graph(trues(1, 1)), fill(.5, 1, 1), Permutation([1]), 0x1, 0x1) == 0.0
-
-    # The following is due to a bug in `StaticGraphs.StaticDiGraph`, which
-    # allocates an empty graph when passed a fully disconnected
-    # `Graphs.SimpleDiGraph`. See `vendor.jl`. `swap_log_likelikood_change`
-    # does therefore currently not work for fully disconnected `G`.
-    @test_throws BoundsError Δlogℒ_for_swap(graph(falses(1, 1)), fill(.5, 1, 1), Permutation([1]), 0x1, 0x1)
+    @test Δlogℒ_for_swap(graph(trues(1, 1)), fill(.5, 1, 1), Permutation([1]), 1, 1) == 0.0
 
     # Having Θ with 0- or 1-entries make likelihoods infinite and therefore the
     # change ratio undefined. Ultimately we need to handle this but for now we
     # just document the behavior.
-    @test Δlogℒ_for_swap(graph(trues(1, 1)), zeros(1, 1), Permutation([1]), 0x1, 0x1) |> isnan
-    @test Δlogℒ_for_swap(graph(trues(1, 1)), ones(1, 1), Permutation([1]), 0x1, 0x1) |> isnan
+    @test Δlogℒ_for_swap(graph(trues(1, 1)), zeros(1, 1), Permutation([1]), 1, 1) |> isnan
+    @test Δlogℒ_for_swap(graph(trues(1, 1)), ones(1, 1), Permutation([1]), 1, 1) |> isnan
 
     Θ = [
         0.875 0.75
         0.5   0.25
     ]
-    A = [
+    A = Bool[
         1 0
         1 1
     ]
 
-    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([1, 2]), 0x1, 0x2)
-    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([1, 2]), 0x2, 0x1)
-    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([2, 1]), 0x1, 0x2)
-    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([2, 1]), 0x2, 0x1)
+    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([1, 2]), 1, 2)
+    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([1, 2]), 2, 1)
+    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([2, 1]), 1, 2)
+    test_Δlogℒ_for_swap(graph(A), Θ, Permutation([2, 1]), 2, 1)
 
-    test_Δlogℒ_for_swap(graph(A), Kronecker.kronecker(Θ, 2), Permutation([1, 2]), 0x1, 0x2)
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, 2), Permutation(collect(1:2^2)), 0x3, 0x2)
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 3)), Kronecker.kronecker(Θ, 3), Permutation(collect(1:2^3)), 0x2, 0x6)
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 6)), Kronecker.kronecker(Θ, 6), Permutation(collect(1:2^6)), 0x2, 0x6)
+    test_Δlogℒ_for_swap(graph(A), Kronecker.kronecker(Θ, 2), Permutation([1, 2]), 1, 2)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, 2), Permutation(collect(1:2^2)), 3, 2)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 3)), Kronecker.kronecker(Θ, 3), Permutation(collect(1:2^3)), 2, 6)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 6)), Kronecker.kronecker(Θ, 6), Permutation(collect(1:2^6)), 2, 6)
 
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, 2), Permutation([1, 4, 2, 3]), 0x3, 0x1)
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), collect(Kronecker.kronecker(Θ, 2)), Permutation([1, 4, 2, 3]), 0x3, 0x1)
-    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, Θ), Permutation([1, 4, 2, 3]), 0x3, 0x1)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, 2), Permutation([1, 4, 2, 3]), 3, 1)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), collect(Kronecker.kronecker(Θ, 2)), Permutation([1, 4, 2, 3]), 3, 1)
+    test_Δlogℒ_for_swap(graph(Kronecker.kronecker(A, 2)), Kronecker.kronecker(Θ, Θ), Permutation([1, 4, 2, 3]), 3, 1)
 
 
     test_Δlogℒ_for_swap(
-        graph([
+        graph(Bool[
             0 1 1 0 1 0 1 0
             0 1 0 1 0 0 0 0
             1 1 1 1 0 1 0 1
@@ -489,8 +481,8 @@ end
         ]),
         Kronecker.kronecker(Θ, 3),
         Permutation(collect(1:2^3)),
-        0x2,
-        0x6
+        2,
+        6
     )
 
     #=
