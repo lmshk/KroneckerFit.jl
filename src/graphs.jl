@@ -1,3 +1,4 @@
+using Random
 using SparseArrays
 
 import Distributions
@@ -15,14 +16,26 @@ Graph(A::SparseMatrixCSC{Bool, Index}) where Index <: Integer = Graph{Index}(
 )
 
 Graph(A::AbstractMatrix{Bool}) = Graph(sparse(A))
-Graph(edges::AbstractVector{Tuple{Index, Index}}) where Index <: Integer =
+function Graph(
+    sources::AbstractVector{Index},
+    targets::AbstractVector{Index};
+    base::Int = 1
+) where Index <: Integer
+    n = max(maximum(sources), maximum(targets))
+    if base ≥ 2
+        n = nextpow(base, n)
+    end
+
     Graph(
         sparse(
-            first.(edges),
-            last.(edges),
-            [true for _ in edges]
+            sources,
+            targets,
+            [true for _ in sources],
+            n,
+            n,
         )
     )
+end
 
 nodes(G::Graph{Index}) where Index <: Integer = Base.OneTo{Index}(size(G.A)[1])
 edges(G::Graph{Index}) where Index <: Integer = G.edges
@@ -35,11 +48,6 @@ function foreach_incident_edge(
     u::Index,
     v::Index,
 ) where Index <: Integer
-#=     foreach(f, (u, w) for w in outneighbors(G, u))
-    foreach(f, (v, w) for w in outneighbors(G, v) if w != u)
-    foreach(f, (w, u) for w in inneighbors(G, u) if w != u)
-    foreach(f, (w, v) for w in inneighbors(G, v) if w != v && w != u) =#
-
     foreach(f, (u, rowvals(G.Aᵀ)[i]) for i in nzrange(G.Aᵀ, u))
     foreach(f, (v, rowvals(G.Aᵀ)[j]) for j in nzrange(G.Aᵀ, v) if rowvals(G.Aᵀ)[j] != u)
     foreach(f, (rowvals(G.A)[i], u) for i in nzrange(G.A, u) if rowvals(G.A)[i] != u)
