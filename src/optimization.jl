@@ -1,8 +1,5 @@
 using Random
 
-
-# policies
-
 struct TaylorApproximationPolicy{T <: Real}
     ε::T
     n::Int
@@ -13,26 +10,12 @@ struct TaylorApproximationPolicy{T <: Real}
     ) where T <: Real = new(ε, n)
 end
 
-struct ChainConvergencePolicy{T <: Real}
-    ω::Real
-    initial_burn::Int
-    burn_growth::Int
-    burn_range::UnitRange{Int}
-    α::T
-
-    ChainConvergencePolicy{T}(;
-        ω = 0.6,
-        initial_burn = 2,
-        burn_growth = 1,
-        burn_range = 1594:2178306,
-        α = 0.001,
-    ) where T <: Real = new(
-        ω,
-        initial_burn,
-        burn_growth,
-        burn_range,
-        α,
-    )
+Base.@kwdef struct ConvergencePolicy{T <: Real}
+    ω::Float64 = 0.6
+    φ::Float64 = (1 + sqrt(5)) / 2
+    initial_target::Float64 = φ^10 / sqrt(5)
+    α::T = 0.001
+    maximal_burn::Int = 2178220
 end
 
 struct GradientExpectationPolicy{T}
@@ -64,7 +47,7 @@ end
 
 struct GradientAscentPolicy{T}
     maximum_steps::Int
-    σ_convergence::ChainConvergencePolicy{T}
+    σ_convergence::ConvergencePolicy{T}
     ∇logℒ_expectation::GradientExpectationPolicy{T}
     ∇logℒ_update::GradientUpdatePolicy{T}
     ε::T
@@ -73,7 +56,7 @@ struct GradientAscentPolicy{T}
 
     GradientAscentPolicy{T}(;
         maximum_steps = typemax(Int),
-        σ_convergence = ChainConvergencePolicy{T}(),
+        σ_convergence = ConvergencePolicy{T}(),
         ∇logℒ_expectation = GradientExpectationPolicy{T}(),
         ∇logℒ_update = GradientUpdatePolicy{T}(),
         ε = 1e-5,
@@ -90,8 +73,56 @@ struct GradientAscentPolicy{T}
     )
 end
 
+Base.@kwdef mutable struct Convergence{T <: Real}
+    target::Float64
+    burned::Int = 0
+    estimates::Int = 0
+    samples::Int = 0
+    μ::T = zero(T)
+    Σ𝕍::T = zero(T)
+end
 
-# likelihood
+function Convergence(policy::ConvergencePolicy{T}) where T <: Real
+    policy.initial_target ≥ 2.0 || throw(DomainError(policy.initial_target))
+    Convergence{T}(target = policy.initial_target)
+end
+
+is_estimate_complete(convergence::Convergence{T}) where T <: Real =
+    convergence.samples ≥ round(Int, convergence.target)
+
+function update!(
+    convergence::Convergence{T},
+    x::T;
+    policy::ConvergencePolicy{T},
+) where T <: Real
+    if is_estimate_complete(convergence)
+        convergence.target *= policy.φ
+        convergence.burned += convergence.samples
+        convergence.samples = 0
+        convergence.estimates += 1
+        convergence.μ = zero(T)
+        convergence.Σ𝕍 = zero(T)
+    end
+
+    convergence.samples += 1
+    δ = x - convergence.μ
+    convergence.μ += δ / convergence.samples
+    convergence.Σ𝕍 += δ * (x - convergence.μ)
+
+    convergence
+end
+
+function is_converged(
+    convergence::Convergence{T};
+    policy::ConvergencePolicy{T},
+) where T <: Real
+    α = policy.α
+    n = convergence.samples
+    μ = convergence.μ
+    Σ𝕍 = convergence.Σ𝕍
+
+    is_estimate_complete(convergence) && μ * μ ≤ α * Σ𝕍 / (n - 1)
+end
 
 empty_logℒ(P::AbstractMatrix{T}) where T <: Real =
     sum(log.(one(T) .- P))
@@ -178,9 +209,6 @@ function Δlogℒ_for_swap(
 
     return result
 end
-
-
-# gradient
 
 function empty_∇logℒ!(
     ∇logℒ::Tuple{AbstractMatrix{T}},
@@ -366,38 +394,46 @@ function converge!(
     σ::Permutation;
     P::AbstractMatrix{T},
     G::Graph{Index},
-    policy::ChainConvergencePolicy{T},
+    policy::ConvergencePolicy{T},
     entropy::AbstractRNG,
 ) where {T <: Real, Index <: Integer}
-    policy.initial_burn ≥ 2 || throw(DomainError(policy.initial_burn))
-    policy.burn_growth ≥ 0 || throw(DomainError(policy.burn_growth))
+    convergence = Convergence(policy)
 
-    burned, samples, Δsamples = 0, policy.initial_burn, policy.burn_growth
-    μ, 𝕍 = T(NaN), T(NaN)
-    estimates = 0
-    while burned < last(policy.burn_range)
-        μ, 𝕍 = zero(T), zero(T)
-        for i in 1:samples
-            swap = next_swap(σ; P, G, policy.ω, entropy)
-            @debug("burned swap", _id = :swap, phase = :burn, swap...)
-            swap!(σ, swap.u, swap.v)
-            δ = swap.Δlogℒ - μ
-            μ += δ / i
-            𝕍 += δ * (swap.Δlogℒ - μ)
-        end
-        𝕍 /= samples - 1
-        burned += samples
-        estimates += 1
-        @debug("estimated 𝔼σ_Δlogℒ", _id = :estimate, μ, 𝕍, samples, burned)
+    while convergence.burned ≤ policy.maximal_burn
+        swap = next_swap(σ; P, G, policy.ω, entropy)
+        @debug("burned swap", _id = :swap, phase = :burn, swap...)
+        swap!(σ, swap.u, swap.v)
+        update!(convergence, swap.Δlogℒ; policy)
 
-        if burned ≥ first(policy.burn_range) && μ * μ ≤ policy.α * 𝕍
-            return (; converged = true, estimates, burned, μ, 𝕍, samples)
+        if is_estimate_complete(convergence)
+            @debug("estimated 𝔼σ_Δlogℒ", _id = :estimate,
+                μ = convergence.μ,
+                𝕍 = convergence.Σ𝕍 / (convergence.samples - 1),
+                samples = convergence.samples,
+                burned = convergence.burned,
+            )
         end
 
-        samples, Δsamples = samples + Δsamples, samples
+        if is_converged(convergence; policy)
+            return (;
+                converged = true,
+                estimates = convergence.estimates,
+                μ = convergence.μ,
+                𝕍 = convergence.Σ𝕍 / (convergence.samples - 1),
+                samples = convergence.samples,
+                burned = convergence.burned,
+            )
+        end
     end
 
-    (; converged = false, estimates, burned, μ, 𝕍, samples)
+    return (;
+        converged = false,
+        estimates = convergence.estimates,
+        burned = convergence.burned,
+        μ = convergence.μ,
+        𝕍 = convergence.Σ𝕍 / (convergence.samples - 1),
+        samples = convergence.samples
+    )
 end
 
 function approximate_𝔼σ_∇logℒ!(
