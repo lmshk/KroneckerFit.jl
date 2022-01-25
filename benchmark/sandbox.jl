@@ -9,22 +9,24 @@ using LoggingExtras
 import Arrow
 import CSV
 
-g = CSV.read("p2p-Gnutella25.txt", DataFrame, comment="#", header = [:s, :t]) .+ 1
+g = CSV.read("p2p-Gnutella30.txt", DataFrame, comment="#", header = [:s, :t]) .+ 1
 G = KroneckerFit.Graph(g.s, g.t, base = 2)
 
-entropy = MersenneTwister(42)
-policy = KroneckerFit.GradientAscentPolicy{Float64}(
-    maximum_steps = 100,
-)
+seed = 42
+entropy = MersenneTwister(seed)
+policy = KroneckerFit.GradientAscentPolicy{Float64}()
 
 sink = Dict(
     :swap => NamedTuple[],
+    :chain_estimate => NamedTuple[],
+    :chain_convergence => NamedTuple[],
     :estimate => NamedTuple[],
-    :convergence => NamedTuple[],
     :update => NamedTuple[],
 )
 
-progress = Set((:convergence, :update))
+progress = Set((:estimate, :update))
+
+directory = mkdir("diagnostics_$(Dates.now())")
 
 with_logger(
     TeeLogger(
@@ -45,12 +47,15 @@ with_logger(
         )
     )
 ) do
-    @info "start" Dates.now() policy G
-    result = @time KroneckerFit.fit!(; G, policy, entropy)
-    @info "done" result
+    @info "start" Dates.now() policy seed G.A
+    result = @time KroneckerFit.fit!(; G, entropy)
+    @info "done" Dates.now() policy seed result
+    Arrow.write(
+        joinpath(directory, "permutation.arrow"),
+        DataFrame(σ = result.σ.σ)
+    )
 end
 
-directory = mkdir("diagnostics_$(Dates.now())")
 for (kind, events) in sink
     Arrow.write(
         joinpath(directory, "$(kind)s.arrow"),
