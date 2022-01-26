@@ -45,6 +45,7 @@ function sample_kronecker(nodes, parameters; entropy)
     P = kronecker(
         reshape(parameters, n₀, n₀),
         ceil(Int, log(n₀, nodes))
+        # TODO ^ reduce order by 1? -- 2022-01-26
     )
 
     result = []
