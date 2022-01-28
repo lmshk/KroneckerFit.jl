@@ -17,11 +17,25 @@ function main(; path)
     plot(swaps.Δlogℒ, color = phase_color.(swaps.phase))
     savefig(joinpath(path, "chain.png"))
 
-    plot(updates.𝔼σ_logℒ, legend = false)
-    savefig(joinpath(path, "log_likelihood.png"))
+    savefig(
+        plot(
+            updates.𝔼σ_logℒ,
+            legend = false,
+            xlabel = "Θ updates",
+            ylabel = "logℒ",
+        ),
+        joinpath(path, "log_likelihood.png"),
+    )
 
-    plot(hcat(first.(updates.Θs)...)')
-    savefig(joinpath(path, "initiator.png"))
+    savefig(
+        plot(
+            hcat(first.(updates.Θs)...)',
+            legend = :bottom,
+            xlabel = "Θ updates",
+            ylabel = "Θ",
+        )
+        joinpath(path, "initiator.png")
+    )
 end
 
 main(; parse_args(settings, as_symbols = true)...)

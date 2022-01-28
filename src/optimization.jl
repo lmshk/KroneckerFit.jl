@@ -17,14 +17,14 @@ end
 
 Base.@kwdef struct GradientAscentPolicy{T}
     σ_convergence::ConvergencePolicy{T} = ConvergencePolicy{T}(
-        α = 0.01,
+        α = 0.05,
         initial_target = φ^10 / sqrt(5),
         maximal_burn = 2178220,
     )
     ∇logℒ_expectation::GradientExpectationPolicy{T} =
         GradientExpectationPolicy{T}()
     ∇logℒ_update::GradientUpdatePolicy{T} = GradientUpdatePolicy{T}()
-    Θs_convergence::ConvergencePolicy{T} = ConvergencePolicy{T}(α = 0.01)
+    Θs_convergence::ConvergencePolicy{T} = ConvergencePolicy{T}(α = 0.02)
     logℒ::TaylorApproximationPolicy{T} =
         TaylorApproximationPolicy{T}(ε = 1e-12, n = 100)
 end

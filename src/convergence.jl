@@ -23,15 +23,18 @@ function Convergence(policy::ConvergencePolicy{T}) where T <: Real
     Convergence{T}(; policy, target = policy.initial_target)
 end
 
-summarize(convergence::Convergence{T}) where T <: Real = (;
-    converged = is_converged(convergence),
-    convergence.estimate,
-    convergence.μ,
-    𝕍 = convergence.Σ𝕍 / (convergence.samples - 1),
-    z = μ / sqrt(𝕍),
-    convergence.samples,
-    convergence.burned,
-)
+function summarize(convergence::Convergence{T}) where T <: Real
+    𝕍 = convergence.Σ𝕍 / (convergence.samples - 1)
+    (;
+        converged = is_converged(convergence),
+        convergence.estimate,
+        convergence.μ,
+        𝕍,
+        z = convergence.μ / sqrt(𝕍),
+        convergence.samples,
+        convergence.burned,
+    )
+end
 
 is_estimate_complete(convergence::Convergence{T}) where T <: Real =
     convergence.samples ≥ round(Int, convergence.target)

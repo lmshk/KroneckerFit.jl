@@ -19,9 +19,10 @@ Graph(A::AbstractMatrix{Bool}) = Graph(sparse(A))
 function Graph(
     sources::AbstractVector{Index},
     targets::AbstractVector{Index};
-    base::Int = 1
+    base::Int = 1,
+    minimum_nodes::Int = 1,
 ) where Index <: Integer
-    n = max(maximum(sources), maximum(targets))
+    n = max(minimum_nodes, max(maximum(sources), maximum(targets)))
     if base ≥ 2
         n = nextpow(base, n)
     end
