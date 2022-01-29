@@ -24,7 +24,7 @@ Base.@kwdef struct GradientAscentPolicy{T}
     ∇logℒ_expectation::GradientExpectationPolicy{T} =
         GradientExpectationPolicy{T}()
     ∇logℒ_update::GradientUpdatePolicy{T} = GradientUpdatePolicy{T}()
-    Θs_convergence::ConvergencePolicy{T} = ConvergencePolicy{T}(α = 0.02)
+    Θs_convergence::ConvergencePolicy{T} = ConvergencePolicy{T}(α = 0.05)
     logℒ::TaylorApproximationPolicy{T} =
         TaylorApproximationPolicy{T}(ε = 1e-12, n = 100)
 end
@@ -123,8 +123,12 @@ function update_Θs!(
         v .= β₂ .* v .+ (one(T) - β₂) .* ∇logΘ.^2
         debias = sqrt(one(T) - β₂^i) / (one(T) - β₁^i)
         ΔΘ .= α * debias .* m ./ (sqrt.(v) .+ 1e-8)
+        ΔΘ .+= Θ
+        clamp!(ΔΘ, policy.range...)
+        ΔΘ .-= Θ
         Θ .+= ΔΘ
         clamp!(Θ, policy.range...)
+        # TODO: check if ^ is necessary. -- 2022-01-29
     end
 end
 
@@ -144,14 +148,20 @@ function ascend!(
     vs = zero.(Θs)
     ΔΘs = similar.(Θs)
 
+    total = 0
+
     σ_convergence = converge!(σ; P, G, policy = policy.σ_convergence, entropy)
-    @debug("σ converged", _id = :chain_convergence,
+    @debug("converged σ", _id = :chain_convergence,
         summarize(σ_convergence)...
     )
+    total += σ_convergence.samples + σ_convergence.burned
 
     𝔼σ_logℒ = approximate_logℒ(G, P, σ; policy = policy.logℒ)
-    convergence = Convergence(policy.Θs_convergence)
-    while true
+    convergence = Tuple(
+        [Convergence(policy.Θs_convergence) for _ in Θ]
+        for Θ in Θs
+    )
+    for i in Iterators.countfrom(1)
         σ_convergence = converge!(
             σ;
             P,
@@ -162,8 +172,9 @@ function ascend!(
         @debug("reconverged σ", _id = :chain_convergence,
             summarize(σ_convergence)...
         )
+        total += σ_convergence.samples + σ_convergence.burned
 
-        new_𝔼σ_logℒ = approximate_𝔼σ_∇logℒ!(
+        𝔼σ_logℒ = approximate_𝔼σ_∇logℒ!(
             𝔼σ_∇logℒ_Θs,
             σ;
             P,
@@ -173,21 +184,8 @@ function ascend!(
             entropy,
             ∇logℒ_Θs,
         )
+        total += σ_convergence.samples
 
-        update!(convergence, new_𝔼σ_logℒ - 𝔼σ_logℒ)
-
-        if is_estimate_complete(convergence)
-            @debug("estimated 𝔼σ(logℒ̂))", _id = :estimate,
-                summarize(convergence)...
-            )
-        end
-
-        if is_converged(convergence) || should_give_up(convergence)
-            break
-        end
-
-        𝔼σ_logℒ = new_𝔼σ_logℒ
-        i = convergence.burned + convergence.samples
         update_Θs!(
             Θs,
             𝔼σ_∇logℒ_Θs;
@@ -200,10 +198,20 @@ function ascend!(
         @debug("updated Θs", _id = :update,
             i, 𝔼σ_logℒ, Θs, 𝔼σ_∇logℒ_Θs, ms, vs, ΔΘs
         )
+
+        update!(convergence, ΔΘs)
+        if is_estimate_complete(convergence)
+            @debug("estimated 𝔼σ(ΔΘ))", _id = :estimate,
+                summarize(convergence)...
+            )
+        end
+        if is_converged(convergence) || should_give_up(convergence)
+            break
+        end
     end
 
     # TODO: Post-optimize σ. -- 2022-01-21
     
     logℒ = approximate_logℒ(G, P, σ; policy = policy.logℒ)
-    (; summarize(convergence)..., Θs, σ, logℒ, 𝔼σ_logℒ)
+    (; summarize(convergence)..., Θs, σ, logℒ, 𝔼σ_logℒ, total)
 end

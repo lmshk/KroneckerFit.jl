@@ -40,13 +40,13 @@ function main(; cull, sink, networks)
         )
 
         mkpath(sink)
-        subname = "q$(round(Int, 100 * cull))"
+        culltag = "q$(round(Int, 100 * cull))"
         Arrow.write(
-            joinpath(sink, "$(basename(network))-$subname.edges.arrow"),
+            joinpath(sink, "$(basename(network)).$culltag.edges.arrow"),
             DataFrame(source = sources, target = targets)
         )
         Arrow.write(
-            joinpath(sink, "$(basename(network))-$subname.names.arrow"),
+            joinpath(sink, "$(basename(network)).$culltag.names.arrow"),
             DataFrame(gene = genes)
         )
     end

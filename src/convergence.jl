@@ -36,11 +36,34 @@ function summarize(convergence::Convergence{T}) where T <: Real
     )
 end
 
+function summarize(
+    convergence::Tuple{Vararg{AbstractMatrix{Convergence{T}}}}
+) where T <: Real
+    consolidated = Tuple([summarize(c2) for c2 in c1] for c1 in convergence)
+    (;
+        converged = Tuple([c2.converged for c2 in c1] for c1 in consolidated),
+        estimate = last(last(consolidated)).estimate,
+        μ = Tuple([c2.μ for c2 in c1] for c1 in consolidated),
+        𝕍 = Tuple([c2.𝕍 for c2 in c1] for c1 in consolidated),
+        z = Tuple([c2.z for c2 in c1] for c1 in consolidated),
+        samples = last(last(consolidated)).samples,
+        burned = last(last(consolidated)).burned,
+    )
+end
+
 is_estimate_complete(convergence::Convergence{T}) where T <: Real =
     convergence.samples ≥ round(Int, convergence.target)
 
+is_estimate_complete(
+    convergence::Tuple{Vararg{AbstractMatrix{Convergence{T}}}}
+) where T <: Real = convergence |> last |> last |> is_estimate_complete
+
 should_give_up(convergence::Convergence{T}) where T <: Real =
     convergence.burned + convergence.samples ≥ convergence.policy.maximal_burn
+
+should_give_up(
+    convergence::Tuple{Vararg{AbstractMatrix{Convergence{T}}}}
+) where T <: Real = convergence |> last |> last |> should_give_up
 
 function is_converged(convergence::Convergence{T}) where T <: Real
     α = convergence.policy.α
@@ -48,7 +71,19 @@ function is_converged(convergence::Convergence{T}) where T <: Real
     μ = convergence.μ
     Σ𝕍 = convergence.Σ𝕍
 
-    is_estimate_complete(convergence) && μ * μ < α * α * Σ𝕍 / (n - 1)
+    is_estimate_complete(convergence) && μ * μ ≤ α * α * Σ𝕍 / (n - 1)
+end
+
+function is_converged(
+    convergence::Tuple{Vararg{AbstractMatrix{Convergence{T}}}}
+) where T <: Real
+    for c1 in convergence
+        for c2 in c1
+            is_converged(c2) || return false
+        end
+    end
+    
+    true
 end
 
 function update!(convergence::Convergence{T}, x::T) where T <: Real
@@ -67,4 +102,13 @@ function update!(convergence::Convergence{T}, x::T) where T <: Real
     convergence.Σ𝕍 += δ * (x - convergence.μ)
 
     convergence
+end
+
+function update!(
+    convergence::Tuple{Vararg{AbstractMatrix{Convergence{T}}}},
+    x::Tuple{Vararg{AbstractMatrix{T}}}
+) where T <: Real
+    for (convergences, xs) in zip(convergence, x)
+        update!.(convergences, xs)
+    end
 end

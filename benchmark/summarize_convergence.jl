@@ -11,31 +11,35 @@ end
 phase_color(phase) = phase == :burn ? :red : :blue
 
 function main(; path)
-    swaps = joinpath(path, "swaps.arrow") |> Arrow.Table |> DataFrame
-    updates = joinpath(path, "updates.arrow") |> Arrow.Table |> DataFrame
-
-    plot(swaps.Δlogℒ, color = phase_color.(swaps.phase))
-    savefig(joinpath(path, "chain.png"))
-
-    savefig(
-        plot(
-            updates.𝔼σ_logℒ,
-            legend = false,
-            xlabel = "Θ updates",
-            ylabel = "logℒ",
-        ),
-        joinpath(path, "log_likelihood.png"),
-    )
-
-    savefig(
-        plot(
-            hcat(first.(updates.Θs)...)',
-            legend = :bottom,
-            xlabel = "Θ updates",
-            ylabel = "Θ",
+    if isfile("$(path).swap.arrow")
+        swaps = "$(path).swap.arrow" |> Arrow.Table |> DataFrame
+        savefig(
+            plot(swaps.Δlogℒ, color = phase_color.(swaps.phase)),
+            "$(path).chain.png",
         )
-        joinpath(path, "initiator.png")
-    )
+    end
+
+    if isfile("$(path).update.arrow")
+        updates = "$(path).update.arrow" |> Arrow.Table |> DataFrame
+        savefig(
+            plot(
+                updates.𝔼σ_logℒ,
+                legend = false,
+                xlabel = "Θ updates",
+                ylabel = "logℒ",
+            ),
+            "$(path).log_likelihood.svg",
+        )
+        savefig(
+            plot(
+                hcat(first.(updates.Θs)...)',
+                legend = :bottom,
+                xlabel = "Θ updates",
+                ylabel = "Θ",
+            ),
+            "$(path).initiators.svg",
+        )
+    end
 end
 
 main(; parse_args(settings, as_symbols = true)...)
